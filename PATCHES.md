@@ -105,3 +105,8 @@ Regression: `received_go_away_facts_reach_stream_and_connection_errors`
 connection's error both carry the last stream id, reason and debug data. Before
 the patch the test does not compile (neither accessor exists) and no public API
 yields the last stream id.
+`received_go_away_facts_reach_new_requests_and_poll_ready` and
+`received_graceful_go_away_facts_reach_new_requests` (review probes) check the
+same facts on a request sent after the GOAWAY and on `poll_ready`, for an
+ENHANCE_YOUR_CALM and a NO_ERROR GOAWAY; the graceful connection still ends
+with `Ok`, as upstream.
