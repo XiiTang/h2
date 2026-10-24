@@ -471,13 +471,13 @@ impl State {
         match self.inner {
             Closed(Cause::Error(Error::Reset(_, reason, _)))
             | Closed(Cause::ErrorAfterEndStream(Error::Reset(_, reason, _)))
-            | Closed(Cause::Error(Error::GoAway(_, reason, _, _)))
-            | Closed(Cause::ErrorAfterEndStream(Error::GoAway(_, reason, _, _)))
             | Closed(Cause::ScheduledLibraryReset(reason)) => Ok(Some(reason)),
             Closed(Cause::Error(Error::HeaderListTooLarge(_)))
             | Closed(Cause::ErrorAfterEndStream(Error::HeaderListTooLarge(_))) => {
                 Ok(Some(Reason::PROTOCOL_ERROR))
             }
+            // A GOAWAY, like any other end, is returned whole, so a received
+            // frame keeps its last stream id and debug data.
             Closed(Cause::Error(ref e) | Cause::ErrorAfterEndStream(ref e)) => {
                 Err(e.clone().into())
             }
@@ -529,6 +529,27 @@ mod tests {
         assert_eq!(
             state.ensure_reason(PollReset::Streaming).unwrap(),
             Some(Reason::NO_ERROR)
+        );
+    }
+
+    #[test]
+    fn ensure_reason_returns_a_received_go_away_whole() {
+        let go_away = frame::GoAway::with_debug_data(
+            StreamId::from(1),
+            Reason::ENHANCE_YOUR_CALM,
+            bytes::Bytes::from_static(b"\x00\xffdebug"),
+        );
+        let mut state = State::default();
+        state.send_open(false).unwrap();
+        state.handle_error(&proto::Error::remote_go_away(&go_away));
+
+        let err = state.ensure_reason(PollReset::Streaming).unwrap_err();
+        assert!(err.is_go_away() && err.is_remote(), "{:?}", err);
+        assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
+        assert_eq!(err.last_stream_id().map(u32::from), Some(1));
+        assert_eq!(
+            err.debug_data().map(|data| &data[..]),
+            Some(&b"\x00\xffdebug"[..])
         );
     }
 }

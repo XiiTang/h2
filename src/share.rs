@@ -367,7 +367,8 @@ impl<B: Buf> SendStream<B> {
     /// # Error
     ///
     /// If connection sees an error, this returns that error instead of a
-    /// `Reason`.
+    /// `Reason`. A GOAWAY that ended the stream is returned whole, with its
+    /// last stream id and debug data when it was received.
     pub fn poll_reset(&mut self, cx: &mut Context) -> Poll<Result<Reason, crate::Error>> {
         self.inner.poll_reset(cx, proto::PollReset::Streaming)
     }

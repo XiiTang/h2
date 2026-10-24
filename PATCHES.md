@@ -99,6 +99,19 @@ a GOAWAY received from the peer) and `Error::debug_data() -> Option<&Bytes>`
 (for any GOAWAY). Nothing is inferred from the facts; GOAWAY handling, stream
 selection and `Display` are unchanged.
 
+`poll_reset` (`SendStream`, `SendResponse`, `SendPushedResponse`) also hands a
+stream's end to the caller, and upstream `State::ensure_reason` reduced a GOAWAY
+there to its bare reason (src/proto/streams/state.rs:477-483 at 222cc7b); hyper's
+request-body writer rebuilds its error from that reason. It now returns the
+GOAWAY whole through the existing error branch, as it already did for I/O and
+other errors; reset reasons are returned as before. The other paths that hand a
+stream's end to a caller already return the stored error whole: the response
+future, `poll_informational`, `RecvStream::poll_data` and `poll_trailers`, push
+promises, `send_request`/`poll_ready` (the connection error) and the connection
+future. `poll_capacity` returns `None` and later sends return
+`InactiveStreamId`/`UnexpectedFrameType` for any ended stream: they carry no end
+to reduce (only a send queue cap end is returned there, below).
+
 Regression: `received_go_away_facts_reach_stream_and_connection_errors`
 (tests/h2-tests/tests/client_request.rs) receives GOAWAY(1, ENHANCE_YOUR_CALM,
 "too_many_pings") with streams 1 and 3 open; stream 3's error and the
@@ -109,4 +122,8 @@ yields the last stream id.
 `received_graceful_go_away_facts_reach_new_requests` (review probes) check the
 same facts on a request sent after the GOAWAY and on `poll_ready`, for an
 ENHANCE_YOUR_CALM and a NO_ERROR GOAWAY; the graceful connection still ends
-with `Ok`, as upstream.
+with `Ok`, as upstream. `received_go_away_facts_reach_poll_reset` checks the
+stream's `poll_reset` after its response failed with the GOAWAY, with binary
+debug data, and the unit test `ensure_reason_returns_a_received_go_away_whole`
+(src/proto/streams/state.rs) checks the check point; both fail at 8eda728
+(`poll_reset` returns `Ok(ENHANCE_YOUR_CALM)`).

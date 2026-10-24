@@ -2415,3 +2415,48 @@ async fn received_graceful_go_away_facts_reach_new_requests() {
 
     join(srv, h2).await;
 }
+
+#[tokio::test]
+async fn received_go_away_facts_reach_poll_reset() {
+    h2_support::trace_init!();
+    let (io, mut peer) = mock::new();
+    let (mut client, mut conn) = client::handshake(io).await.unwrap();
+    conn.drive(peer.assert_client_handshake()).await;
+    let request = || {
+        Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/")
+            .body(())
+            .unwrap()
+    };
+    let (_response1, _stream1) = client.send_request(request(), false).unwrap();
+    let (response3, mut stream3) = client.send_request(request(), false).unwrap();
+    for id in [1, 3] {
+        conn.drive(peer.recv_frame(frames::headers(id).request("POST", "https://example.com/")))
+            .await;
+    }
+    peer.send_frame(
+        frames::go_away(1)
+            .calm()
+            .data(Bytes::from_static(b"\x00\xffexact-goaway-data")),
+    )
+    .await;
+
+    fn assert_facts(err: &h2::Error) {
+        assert!(err.is_go_away() && err.is_remote(), "{:?}", err);
+        assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
+        assert_eq!(err.last_stream_id().map(u32::from), Some(1));
+        assert_eq!(
+            err.debug_data().map(|data| &data[..]),
+            Some(&b"\x00\xffexact-goaway-data"[..])
+        );
+    }
+
+    // Stream 3 is above the GOAWAY's last stream id.
+    assert_facts(&conn.drive(response3).await.unwrap_err());
+    let result = poll_fn(|cx| stream3.poll_reset(cx)).await;
+    match result {
+        Err(ref err) => assert_facts(err),
+        Ok(reason) => panic!("poll_reset erased the GOAWAY's facts: Ok({:?})", reason),
+    }
+}
