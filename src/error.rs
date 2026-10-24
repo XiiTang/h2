@@ -28,8 +28,9 @@ enum Kind {
     #[allow(dead_code)]
     Reset(StreamId, Reason, Initiator),
 
-    /// A GO_AWAY frame was received or sent.
-    GoAway(Bytes, Reason, Initiator),
+    /// A GO_AWAY frame was received or sent. The last field is the last
+    /// stream identifier of a GO_AWAY frame received from the peer.
+    GoAway(Bytes, Reason, Initiator, Option<StreamId>),
 
     /// A received header block exceeded SETTINGS_MAX_HEADER_LIST_SIZE, and
     /// the library reset the stream with `PROTOCOL_ERROR`.
@@ -56,7 +57,7 @@ impl Error {
     /// action taken by the peer (i.e. a protocol error).
     pub fn reason(&self) -> Option<Reason> {
         match self.kind {
-            Kind::Reset(_, reason, _) | Kind::GoAway(_, reason, _) | Kind::Reason(reason) => {
+            Kind::Reset(_, reason, _) | Kind::GoAway(_, reason, _, _) | Kind::Reason(reason) => {
                 Some(reason)
             }
             Kind::HeaderListTooLarge(_) => Some(Reason::PROTOCOL_ERROR),
@@ -96,6 +97,29 @@ impl Error {
         matches!(self.kind, Kind::GoAway(..))
     }
 
+    /// If the error is from a `GOAWAY` frame received from the peer, the
+    /// frame's last stream identifier (RFC 9113 §6.8).
+    ///
+    /// Returns `None` for any other error, including a `GOAWAY` sent by this
+    /// endpoint.
+    pub fn last_stream_id(&self) -> Option<crate::StreamId> {
+        match self.kind {
+            Kind::GoAway(_, _, Initiator::Remote, Some(id)) => {
+                Some(crate::StreamId::from_internal(id))
+            }
+            _ => None,
+        }
+    }
+
+    /// If the error is from a `GOAWAY`, the frame's additional debug data,
+    /// which is empty when the frame carried none.
+    pub fn debug_data(&self) -> Option<&Bytes> {
+        match self.kind {
+            Kind::GoAway(ref debug_data, ..) => Some(debug_data),
+            _ => None,
+        }
+    }
+
     /// Returns true if the error is from a `RST_STREAM`.
     pub fn is_reset(&self) -> bool {
         matches!(self.kind, Kind::Reset(..) | Kind::HeaderListTooLarge(_))
@@ -122,7 +146,7 @@ impl Error {
     pub fn is_remote(&self) -> bool {
         matches!(
             self.kind,
-            Kind::GoAway(_, _, Initiator::Remote) | Kind::Reset(_, _, Initiator::Remote)
+            Kind::GoAway(_, _, Initiator::Remote, _) | Kind::Reset(_, _, Initiator::Remote)
         )
     }
 
@@ -132,7 +156,7 @@ impl Error {
     pub fn is_library(&self) -> bool {
         matches!(
             self.kind,
-            Kind::GoAway(_, _, Initiator::Library)
+            Kind::GoAway(_, _, Initiator::Library, _)
                 | Kind::Reset(_, _, Initiator::Library)
                 | Kind::HeaderListTooLarge(_)
         )
@@ -146,8 +170,8 @@ impl From<proto::Error> for Error {
         Error {
             kind: match src {
                 Reset(stream_id, reason, initiator) => Kind::Reset(stream_id, reason, initiator),
-                GoAway(debug_data, reason, initiator) => {
-                    Kind::GoAway(debug_data, reason, initiator)
+                GoAway(debug_data, reason, initiator, last_stream_id) => {
+                    Kind::GoAway(debug_data, reason, initiator, last_stream_id)
                 }
                 HeaderListTooLarge(stream_id) => Kind::HeaderListTooLarge(stream_id),
                 Io(kind, inner) => {
@@ -198,15 +222,15 @@ impl fmt::Display for Error {
             Kind::Reset(_, reason, Initiator::Remote) => {
                 return write!(fmt, "stream error received: {}", reason)
             }
-            Kind::GoAway(ref debug_data, reason, Initiator::User) => {
+            Kind::GoAway(ref debug_data, reason, Initiator::User, _) => {
                 write!(fmt, "connection error sent by user: {}", reason)?;
                 debug_data
             }
-            Kind::GoAway(ref debug_data, reason, Initiator::Library) => {
+            Kind::GoAway(ref debug_data, reason, Initiator::Library, _) => {
                 write!(fmt, "connection error detected: {}", reason)?;
                 debug_data
             }
-            Kind::GoAway(ref debug_data, reason, Initiator::Remote) => {
+            Kind::GoAway(ref debug_data, reason, Initiator::Remote, _) => {
                 write!(fmt, "connection error received: {}", reason)?;
                 debug_data
             }

@@ -236,23 +236,16 @@ where
     }
 
     fn take_error(&mut self, ours: Reason, initiator: Initiator) -> Result<(), Error> {
-        let (debug_data, theirs) = self
-            .inner
-            .error
-            .take()
-            .as_ref()
-            .map_or((Bytes::new(), Reason::NO_ERROR), |frame| {
-                (frame.debug_data().clone(), frame.reason())
-            });
-
-        match (ours, theirs) {
-            (Reason::NO_ERROR, Reason::NO_ERROR) => Ok(()),
-            (ours, Reason::NO_ERROR) => Err(Error::GoAway(Bytes::new(), ours, initiator)),
+        match self.inner.error.take() {
             // If both sides reported an error, give their
             // error back to th user. We assume our error
             // was a consequence of their error, and less
             // important.
-            (_, theirs) => Err(Error::remote_go_away(debug_data, theirs)),
+            Some(theirs) if theirs.reason() != Reason::NO_ERROR => {
+                Err(Error::remote_go_away(&theirs))
+            }
+            _ if ours == Reason::NO_ERROR => Ok(()),
+            _ => Err(Error::GoAway(Bytes::new(), ours, initiator, None)),
         }
     }
 
@@ -459,7 +452,7 @@ where
             // Attempting to read a frame resulted in a connection level
             // error. This is handled by setting a GOAWAY frame followed by
             // terminating the connection.
-            Err(Error::GoAway(debug_data, reason, initiator)) => {
+            Err(Error::GoAway(debug_data, reason, initiator, _)) => {
                 self.handle_go_away(reason, debug_data, initiator);
                 Ok(())
             }
@@ -522,7 +515,7 @@ where
     }
 
     fn handle_go_away(&mut self, reason: Reason, debug_data: Bytes, initiator: Initiator) {
-        let e = Error::GoAway(debug_data.clone(), reason, initiator);
+        let e = Error::GoAway(debug_data.clone(), reason, initiator, None);
         tracing::debug!(error = ?e, "Connection::poll; connection error");
 
         // We may have already sent a GOAWAY for this error,

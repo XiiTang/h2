@@ -81,3 +81,27 @@ predicate), and an ordinary PROTOCOL_ERROR reset from a content-length the
 trailers never meet (the predicate is false). With `>=` restored the
 200-byte headers are refused; with `over_size` returning a plain reset every
 predicate assertion fails; before the patch the predicate does not exist.
+
+## Received GOAWAY facts in errors (W5d)
+
+Boundless reports a peer's GOAWAY as `Http.GoAway {last_stream_id, error_code,
+debug_data}` (driver plan v23 W5d; RFC 9113 §6.8). Upstream keeps a received
+GOAWAY's debug data and reason in `proto::Error::GoAway` (src/proto/error.rs:12,
+:56) and the public `Kind::GoAway` (src/error.rs:25-43), but drops its last
+stream identifier when it builds the error, for the streams it fails above that
+identifier (src/proto/streams/streams.rs:800-816) and for the connection's own
+result (src/proto/connection.rs:238-256); the public `Error` exposes only
+`reason()`, so the debug data is reachable only through `Display` text.
+
+The patch keeps the received frame's last stream identifier in both error
+representations and adds `Error::last_stream_id() -> Option<StreamId>` (only for
+a GOAWAY received from the peer) and `Error::debug_data() -> Option<&Bytes>`
+(for any GOAWAY). Nothing is inferred from the facts; GOAWAY handling, stream
+selection and `Display` are unchanged.
+
+Regression: `received_go_away_facts_reach_stream_and_connection_errors`
+(tests/h2-tests/tests/client_request.rs) receives GOAWAY(1, ENHANCE_YOUR_CALM,
+"too_many_pings") with streams 1 and 3 open; stream 3's error and the
+connection's error both carry the last stream id, reason and debug data. Before
+the patch the test does not compile (neither accessor exists) and no public API
+yields the last stream id.

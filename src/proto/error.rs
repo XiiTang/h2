@@ -1,5 +1,5 @@
 use crate::codec::SendError;
-use crate::frame::{Reason, StreamId};
+use crate::frame::{self, Reason, StreamId};
 
 use bytes::Bytes;
 use std::fmt;
@@ -9,7 +9,8 @@ use std::io;
 #[derive(Clone, Debug)]
 pub enum Error {
     Reset(StreamId, Reason, Initiator),
-    GoAway(Bytes, Reason, Initiator),
+    /// Received GOAWAY retains the last stream identifier.
+    GoAway(Bytes, Reason, Initiator, Option<StreamId>),
     /// The stream was reset with a library PROTOCOL_ERROR because a header
     /// block received on it exceeded SETTINGS_MAX_HEADER_LIST_SIZE.
     HeaderListTooLarge(StreamId),
@@ -31,13 +32,13 @@ pub enum Initiator {
 impl Error {
     pub(crate) fn is_local(&self) -> bool {
         match *self {
-            Self::Reset(_, _, initiator) | Self::GoAway(_, _, initiator) => initiator.is_local(),
+            Self::Reset(_, _, initiator) | Self::GoAway(_, _, initiator, _) => initiator.is_local(),
             Self::HeaderListTooLarge(_) | Self::Io(..) => true,
         }
     }
 
     pub(crate) fn user_go_away(reason: Reason) -> Self {
-        Self::GoAway(Bytes::new(), reason, Initiator::User)
+        Self::GoAway(Bytes::new(), reason, Initiator::User, None)
     }
 
     pub(crate) fn library_reset(stream_id: StreamId, reason: Reason) -> Self {
@@ -49,19 +50,24 @@ impl Error {
     }
 
     pub(crate) fn library_go_away(reason: Reason) -> Self {
-        Self::GoAway(Bytes::new(), reason, Initiator::Library)
+        Self::GoAway(Bytes::new(), reason, Initiator::Library, None)
     }
 
     pub(crate) fn library_go_away_data(reason: Reason, debug_data: impl Into<Bytes>) -> Self {
-        Self::GoAway(debug_data.into(), reason, Initiator::Library)
+        Self::GoAway(debug_data.into(), reason, Initiator::Library, None)
     }
 
     pub(crate) fn remote_reset(stream_id: StreamId, reason: Reason) -> Self {
         Self::Reset(stream_id, reason, Initiator::Remote)
     }
 
-    pub(crate) fn remote_go_away(debug_data: Bytes, reason: Reason) -> Self {
-        Self::GoAway(debug_data, reason, Initiator::Remote)
+    pub(crate) fn remote_go_away(frame: &frame::GoAway) -> Self {
+        Self::GoAway(
+            frame.debug_data().clone(),
+            frame.reason(),
+            Initiator::Remote,
+            Some(frame.last_stream_id()),
+        )
     }
 }
 
@@ -81,7 +87,7 @@ impl Initiator {
 impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Reset(_, reason, _) | Self::GoAway(_, reason, _) => reason.fmt(fmt),
+            Self::Reset(_, reason, _) | Self::GoAway(_, reason, _, _) => reason.fmt(fmt),
             Self::HeaderListTooLarge(_) => Reason::PROTOCOL_ERROR.fmt(fmt),
             Self::Io(_, Some(ref inner)) => inner.fmt(fmt),
             Self::Io(kind, None) => io::Error::from(kind).fmt(fmt),

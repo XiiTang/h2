@@ -801,7 +801,7 @@ impl Inner {
 
         actions.send.recv_go_away(last_stream_id)?;
 
-        let err = Error::remote_go_away(frame.debug_data().clone(), frame.reason());
+        let err = Error::remote_go_away(frame);
 
         let peer = counts.peer();
         self.store.for_each(|stream| {

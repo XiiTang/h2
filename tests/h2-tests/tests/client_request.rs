@@ -1703,6 +1703,68 @@ async fn extended_connect_request() {
 }
 
 #[tokio::test]
+async fn received_go_away_facts_reach_stream_and_connection_errors() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.recv_frame(
+            frames::headers(3)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::go_away(1).calm().data("too_many_pings"))
+            .await;
+        // Dropping the server then closes the connection with stream 1 open.
+        close_rx.await.unwrap();
+    };
+
+    fn assert_facts(err: &h2::Error) {
+        assert!(err.is_go_away() && err.is_remote(), "{:?}", err);
+        assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
+        assert_eq!(err.last_stream_id().map(u32::from), Some(1));
+        assert_eq!(
+            err.debug_data().map(|data| &data[..]),
+            Some(&b"too_many_pings"[..])
+        );
+    }
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        let request = || {
+            Request::builder()
+                .uri("https://example.com/")
+                .body(())
+                .unwrap()
+        };
+        let (response1, _) = client.send_request(request(), true).unwrap();
+        let (response3, _) = client.send_request(request(), true).unwrap();
+
+        // Stream 3 is above the GOAWAY's last stream id.
+        let err = h2.drive(response3).await.unwrap_err();
+        assert_facts(&err);
+
+        // The connection ends with the same GOAWAY.
+        drop(client);
+        close_tx.send(()).unwrap();
+        let (conn, _) = join(h2, response1).await;
+        assert_facts(&conn.unwrap_err());
+    };
+
+    join(srv, h2).await;
+}
+
+#[tokio::test]
 async fn rogue_server_odd_headers() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();

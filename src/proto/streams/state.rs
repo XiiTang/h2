@@ -471,8 +471,8 @@ impl State {
         match self.inner {
             Closed(Cause::Error(Error::Reset(_, reason, _)))
             | Closed(Cause::ErrorAfterEndStream(Error::Reset(_, reason, _)))
-            | Closed(Cause::Error(Error::GoAway(_, reason, _)))
-            | Closed(Cause::ErrorAfterEndStream(Error::GoAway(_, reason, _)))
+            | Closed(Cause::Error(Error::GoAway(_, reason, _, _)))
+            | Closed(Cause::ErrorAfterEndStream(Error::GoAway(_, reason, _, _)))
             | Closed(Cause::ScheduledLibraryReset(reason)) => Ok(Some(reason)),
             Closed(Cause::Error(Error::HeaderListTooLarge(_)))
             | Closed(Cause::ErrorAfterEndStream(Error::HeaderListTooLarge(_))) => {
