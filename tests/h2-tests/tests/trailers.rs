@@ -262,3 +262,131 @@ async fn send_trailers_rejects_connection_specific_headers() {
 
     join(srv, client).await;
 }
+
+#[tokio::test]
+async fn recv_too_big_trailers_fails_the_stream() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_frame_eq(settings, frames::settings().max_header_list_size(64));
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.recv_frame(frames::headers(3).request("POST", "https://example.com/"))
+            .await;
+        // Each trailer block keeps `grpc-status` (44 bytes) within the limit;
+        // `x-big` takes it over, so the decoder keeps only `grpc-status`.
+        srv.send_frame(frames::headers(1).response(200)).await;
+        srv.send_frame(frames::data(1, "hello")).await;
+        srv.send_frame(
+            frames::headers(1)
+                .field("grpc-status", "0")
+                .field("x-big", "x".repeat(100))
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(3).response(200)).await;
+        srv.send_frame(
+            frames::headers(3)
+                .field("grpc-status", "0")
+                .field("x-big", "x".repeat(100))
+                .eos(),
+        )
+        .await;
+        // No reset for 1, which the trailers closed; a reset for 3, whose
+        // request is still open.
+        srv.recv_frame(frames::reset(3).protocol_error()).await;
+        idle_ms(10).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::Builder::new()
+            .max_header_list_size(64)
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let (response1, _) = client.send_request(request, true).expect("request 1");
+        let request = Request::builder()
+            .method("POST")
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let (response3, _stream3) = client.send_request(request, false).expect("request 3");
+
+        let streams = async move {
+            let mut body1 = response1.await.expect("response 1").into_body();
+            assert_eq!(body1.data().await.expect("data").expect("data"), "hello");
+            let err = body1.trailers().await.expect_err("trailers 1");
+            assert!(err.is_reset() && err.is_library());
+            assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+
+            let mut body3 = response3.await.expect("response 3").into_body();
+            let err = body3.trailers().await.expect_err("trailers 3");
+            assert!(err.is_reset() && err.is_library());
+            assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+        };
+
+        conn.drive(streams).await;
+    };
+
+    join(srv, client).await;
+}
+
+#[tokio::test]
+async fn server_recv_too_big_trailers_fails_the_stream() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        let settings = client.assert_server_handshake().await;
+        assert_frame_eq(settings, frames::settings().max_header_list_size(200));
+        // The request's 178 bytes fit; the trailers' `x-big` takes them over.
+        client
+            .send_frame(frames::headers(1).request("POST", "https://example.com/"))
+            .await;
+        client
+            .send_frame(
+                frames::headers(1)
+                    .field("x-small", "0")
+                    .field("x-big", "x".repeat(200))
+                    .eos(),
+            )
+            .await;
+        client.recv_frame(frames::reset(1).protocol_error()).await;
+        idle_ms(10).await;
+    };
+
+    let srv = async move {
+        let mut srv = server::Builder::new()
+            .max_header_list_size(200)
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+
+        let (req, _respond) = srv.next().await.unwrap().expect("request");
+        let req_fut = async move {
+            let mut body = req.into_body();
+            let err = body.trailers().await.expect_err("trailers");
+            assert!(err.is_reset() && err.is_library());
+            assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+        };
+        let srv_fut = async move {
+            poll_fn(move |cx| srv.poll_closed(cx))
+                .await
+                .expect("server");
+        };
+        join(req_fut, srv_fut).await;
+    };
+
+    join(client, srv).await;
+}

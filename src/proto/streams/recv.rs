@@ -429,6 +429,18 @@ impl Recv {
             return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
         }
 
+        if frame.is_over_size() {
+            // The decoder stopped keeping fields at SETTINGS_MAX_HEADER_LIST_SIZE,
+            // so these trailers are incomplete. Fail the stream as `recv_headers`
+            // fails an oversized initial block once its response can no longer
+            // be a 431.
+            tracing::debug!(
+                "stream error PROTOCOL_ERROR -- recv_trailers: frame is over size; stream={:?}",
+                stream.id
+            );
+            return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
+        }
+
         let trailers = frame.into_fields();
 
         // Push the frame onto the stream's recv buffer
