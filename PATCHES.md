@@ -14,7 +14,7 @@ before Store teardown, as required by #956's empty-slab assertion. Its overflow
 assertions remain intact. `cargo test --workspace` passes on macOS arm64; existing
 ignored checks are reported separately. No business retry is added.
 
-## Oversized trailers fail the stream (Boundless #359)
+## Oversized header blocks: trailers fail the stream, the error names the limit (Boundless #359)
 
 `HeaderBlock::load` stops keeping fields once a block reaches the local
 SETTINGS_MAX_HEADER_LIST_SIZE and marks the frame oversize
@@ -25,27 +25,59 @@ PROTOCOL_ERROR, which the application sees as that stream's error.
 `Recv::recv_trailers` (src/proto/streams/recv.rs:419-441) never read the mark,
 so a trailer block over the limit reached the application truncated, as if it
 were complete; upstream master 3c5f61c is the same (recv.rs:409). A gRPC
-`grpc-status` after a large field was lost with it.
+`grpc-status` after a large field was lost with it. Three more facts:
 
-`Recv::recv_trailers`, the one place received trailers are delivered (its single
+- The application could not tell a header list refusal from any other library
+  PROTOCOL_ERROR reset (malformed headers, a content-length never met): both
+  are `Kind::Reset(_, PROTOCOL_ERROR, Library)` (src/error.rs:25-43), so an
+  HTTP or gRPC client could not report which configured limit the peer's
+  block exceeded.
+- The block was marked oversize when its size reached the limit
+  (`headers_size >= max_header_list_size`, src/frame/headers.rs:882). RFC 9113
+  §6.5.2 defines the setting as the maximum field section size the endpoint
+  is prepared to accept, so a block of exactly that size was refused against
+  the RFC; Envoy, for one, refuses only a larger block
+  (source/common/http/http2/codec_impl.cc:1748).
+- The same mark is set when the field map's capacity is exceeded
+  (src/frame/headers.rs:949-956), which is not the header list size.
+
+`recv_trailers`, the one place received trailers are delivered (its single
 caller is `Inner::recv_headers`, src/proto/streams/streams.rs:581), now fails an
-oversized block with `Error::library_reset(id, PROTOCOL_ERROR)`, as
-`recv_headers` fails an oversized initial block that can no longer be a 431. The
-error goes through `reset_on_recv_stream_err`: RST_STREAM(PROTOCOL_ERROR) is sent
-when the stream is still open locally, and none when the trailers' END_STREAM
-closed it, as for an oversized initial block with END_STREAM. `poll_trailers`
-returns that error (`is_reset`, `is_library`, `reason() == PROTOCOL_ERROR`);
-hyper hands it on as `Error::new_h2` (hyper e158e802 src/body/incoming.rs:292-305)
-and tonic maps PROTOCOL_ERROR to `Internal` (tonic 0.14.6 src/status.rs:393-404).
-Blocks over four times the limit still end the connection with
-ENHANCE_YOUR_CALM, as before. No API is added.
+oversized block as `recv_headers` fails an oversized initial block that can no
+longer be a 431. Both go through one private `recv::over_size`, which names a
+block over the header list size `proto::Error::HeaderListTooLarge(id)` and
+leaves one over size only because its field map is full a plain library reset.
+`reset_on_recv_stream_err`, the path every received-headers stream error takes,
+resets the stream as for a library PROTOCOL_ERROR (RST_STREAM sent while the
+stream is still open locally, none when the block's END_STREAM closed it,
+counted against the local error resets) and keeps the cause as the stream's
+end. The new `Error::is_header_list_too_large()` is true for that end, on the
+response future, `poll_trailers`/`poll_data` and the server's request body.
+The error stays a library reset: `is_reset()`, `is_library()`,
+`reason() == Some(PROTOCOL_ERROR)` and `Display` are unchanged, and
+`poll_reset` still returns `Ok(PROTOCOL_ERROR)`, so hyper (`Error::new_h2`,
+hyper e158e802 src/body/incoming.rs:292-305) and tonic (PROTOCOL_ERROR maps to
+`Internal`, tonic 0.14.6 src/status.rs:393-404) behave as before. A block is
+oversize when its size exceeds the limit. Blocks over four times the limit
+still end the connection with ENHANCE_YOUR_CALM, a connection error that is
+not the stream's, and an oversized PUSH_PROMISE still drops the promise the
+application never sees; neither is named by the predicate.
 
 Regression (tests/h2-tests/tests/trailers.rs):
 `recv_too_big_trailers_fails_the_stream` sets a 64-byte client limit and
 receives trailers `grpc-status: 0` and a 100-byte `x-big` on a stream whose
 request ended (no reset sent) and on one whose request is open
 (RST_STREAM(3, PROTOCOL_ERROR) sent); both `poll_trailers` calls fail with the
-library PROTOCOL_ERROR reset. `server_recv_too_big_trailers_fails_the_stream` is
-the server's case with a 200-byte limit: the request's trailers fail and the
-server sends RST_STREAM(1, PROTOCOL_ERROR). At 7b547e0 both fail:
-`poll_trailers` returns `Some({"grpc-status": "0"})` and `Some({"x-small": "0"})`.
+library PROTOCOL_ERROR reset and `is_header_list_too_large()`.
+`server_recv_too_big_trailers_fails_the_stream` is the server's case with a
+200-byte limit: the request's trailers fail the same way and the server sends
+RST_STREAM(1, PROTOCOL_ERROR). At 7b547e0 both fail: `poll_trailers` returns
+`Some({"grpc-status": "0"})` and `Some({"x-small": "0"})`.
+`header_list_size_admits_a_block_at_the_limit_and_names_one_over_it`, under a
+200-byte limit, receives response headers and trailers of exactly 200 bytes
+(delivered whole), headers of 201 bytes (the response fails with the
+predicate, RST_STREAM(3) sent), trailers of 201 bytes (they fail with the
+predicate), and an ordinary PROTOCOL_ERROR reset from a content-length the
+trailers never meet (the predicate is false). With `>=` restored the
+200-byte headers are refused; with `over_size` returning a plain reset every
+predicate assertion fails; before the patch the predicate does not exist.

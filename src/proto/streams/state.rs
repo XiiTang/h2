@@ -343,6 +343,14 @@ impl State {
         self.inner = Closed(Cause::Error(Error::Reset(stream_id, reason, initiator)));
     }
 
+    /// Keep a received header block over the header list size as the end of
+    /// a stream just reset for it.
+    pub fn set_header_list_too_large(&mut self) {
+        if let Closed(Cause::Error(Error::Reset(stream_id, _, Initiator::Library))) = self.inner {
+            self.inner = Closed(Cause::Error(Error::HeaderListTooLarge(stream_id)));
+        }
+    }
+
     /// Set the stream state to a scheduled reset.
     pub fn set_scheduled_reset(&mut self, reason: Reason) {
         debug_assert!(!self.is_closed());
@@ -466,6 +474,10 @@ impl State {
             | Closed(Cause::Error(Error::GoAway(_, reason, _)))
             | Closed(Cause::ErrorAfterEndStream(Error::GoAway(_, reason, _)))
             | Closed(Cause::ScheduledLibraryReset(reason)) => Ok(Some(reason)),
+            Closed(Cause::Error(Error::HeaderListTooLarge(_)))
+            | Closed(Cause::ErrorAfterEndStream(Error::HeaderListTooLarge(_))) => {
+                Ok(Some(Reason::PROTOCOL_ERROR))
+            }
             Closed(Cause::Error(ref e) | Cause::ErrorAfterEndStream(ref e)) => {
                 Err(e.clone().into())
             }

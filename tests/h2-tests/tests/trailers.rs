@@ -328,11 +328,13 @@ async fn recv_too_big_trailers_fails_the_stream() {
             assert_eq!(body1.data().await.expect("data").expect("data"), "hello");
             let err = body1.trailers().await.expect_err("trailers 1");
             assert!(err.is_reset() && err.is_library());
+            assert!(err.is_header_list_too_large());
             assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
 
             let mut body3 = response3.await.expect("response 3").into_body();
             let err = body3.trailers().await.expect_err("trailers 3");
             assert!(err.is_reset() && err.is_library());
+            assert!(err.is_header_list_too_large());
             assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
         };
 
@@ -378,6 +380,7 @@ async fn server_recv_too_big_trailers_fails_the_stream() {
             let mut body = req.into_body();
             let err = body.trailers().await.expect_err("trailers");
             assert!(err.is_reset() && err.is_library());
+            assert!(err.is_header_list_too_large());
             assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
         };
         let srv_fut = async move {
@@ -389,4 +392,107 @@ async fn server_recv_too_big_trailers_fails_the_stream() {
     };
 
     join(client, srv).await;
+}
+
+#[tokio::test]
+async fn header_list_size_admits_a_block_at_the_limit_and_names_one_over_it() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    // Under a 200-byte limit (RFC 9113 §6.5.2: name, value and 32 bytes per
+    // field, pseudo-header fields included): `:status` takes 42 bytes and an
+    // `x-pad` field 37 plus its value.
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_frame_eq(settings, frames::settings().max_header_list_size(200));
+        for id in [1, 3, 5, 7] {
+            srv.recv_frame(
+                frames::headers(id)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        }
+        // Stream 1: headers (42 + 37 + 121) and trailers (37 + 163) at 200.
+        srv.send_frame(
+            frames::headers(1)
+                .response(200)
+                .field("x-pad", "p".repeat(121)),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).field("x-pad", "t".repeat(163)).eos())
+            .await;
+        // Stream 3: headers one byte over.
+        srv.send_frame(
+            frames::headers(3)
+                .response(200)
+                .field("x-pad", "p".repeat(122)),
+        )
+        .await;
+        // Stream 5: trailers one byte over.
+        srv.send_frame(frames::headers(5).response(200)).await;
+        srv.send_frame(frames::headers(5).field("x-pad", "t".repeat(164)).eos())
+            .await;
+        // Stream 7: an ordinary PROTOCOL_ERROR (content-length never met).
+        srv.send_frame(
+            frames::headers(7)
+                .response(200)
+                .field("content-length", "5"),
+        )
+        .await;
+        srv.send_frame(frames::headers(7).field("x-small", "0").eos())
+            .await;
+        // Only stream 3's response headers left it open to reset.
+        srv.recv_frame(frames::reset(3).protocol_error()).await;
+        idle_ms(10).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::Builder::new()
+            .max_header_list_size(200)
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+        let mut send = || {
+            let request = Request::builder()
+                .uri("https://example.com/")
+                .body(())
+                .unwrap();
+            client.send_request(request, true).expect("request").0
+        };
+        let (r1, r3, r5, r7) = (send(), send(), send(), send());
+
+        let streams = async move {
+            let response = r1.await.expect("response 1");
+            assert_eq!(response.headers()["x-pad"].len(), 121);
+            let mut body = response.into_body();
+            let trailers = body
+                .trailers()
+                .await
+                .expect("trailers 1")
+                .expect("trailers");
+            assert_eq!(trailers["x-pad"].len(), 163);
+
+            let err = r3.await.expect_err("response 3");
+            assert!(err.is_header_list_too_large());
+            assert!(err.is_reset() && err.is_library());
+            assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+
+            let mut body = r5.await.expect("response 5").into_body();
+            let err = body.trailers().await.expect_err("trailers 5");
+            assert!(err.is_header_list_too_large());
+            assert!(err.is_reset() && err.is_library());
+            assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+
+            let mut body = r7.await.expect("response 7").into_body();
+            let err = body.trailers().await.expect_err("trailers 7");
+            assert!(!err.is_header_list_too_large());
+            assert!(err.is_reset() && err.is_library());
+            assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+        };
+
+        conn.drive(streams).await;
+    };
+
+    join(srv, client).await;
 }

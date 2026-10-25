@@ -1768,6 +1768,15 @@ impl Actions {
         counts: &mut Counts,
         res: Result<(), Error>,
     ) -> Result<(), Error> {
+        // A header block over the header list size is a library
+        // PROTOCOL_ERROR reset that keeps its cause as the stream's end.
+        let header_list_too_large = matches!(res, Err(Error::HeaderListTooLarge(_)));
+        let res = match res {
+            Err(Error::HeaderListTooLarge(stream_id)) => {
+                Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR))
+            }
+            res => res,
+        };
         if let Err(Error::Reset(stream_id, reason, initiator)) = res {
             debug_assert_eq!(stream_id, stream.id);
 
@@ -1775,8 +1784,12 @@ impl Actions {
                 counts.inc_num_local_error_resets();
 
                 // Reset the stream.
+                let was_reset = stream.state.is_reset();
                 self.send
                     .send_reset(reason, initiator, buffer, stream, counts, &mut self.task);
+                if header_list_too_large && !was_reset {
+                    stream.state.set_header_list_too_large();
+                }
                 self.recv.enqueue_reset_expiration(stream, counts);
                 // if a RecvStream is parked, ensure it's notified
                 stream.notify_recv();

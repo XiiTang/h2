@@ -31,6 +31,11 @@ enum Kind {
     /// A GO_AWAY frame was received or sent.
     GoAway(Bytes, Reason, Initiator),
 
+    /// A received header block exceeded SETTINGS_MAX_HEADER_LIST_SIZE, and
+    /// the library reset the stream with `PROTOCOL_ERROR`.
+    #[allow(dead_code)]
+    HeaderListTooLarge(StreamId),
+
     /// The user created an error from a bare Reason.
     Reason(Reason),
 
@@ -54,6 +59,7 @@ impl Error {
             Kind::Reset(_, reason, _) | Kind::GoAway(_, reason, _) | Kind::Reason(reason) => {
                 Some(reason)
             }
+            Kind::HeaderListTooLarge(_) => Some(Reason::PROTOCOL_ERROR),
             _ => None,
         }
     }
@@ -92,7 +98,22 @@ impl Error {
 
     /// Returns true if the error is from a `RST_STREAM`.
     pub fn is_reset(&self) -> bool {
-        matches!(self.kind, Kind::Reset(..))
+        matches!(self.kind, Kind::Reset(..) | Kind::HeaderListTooLarge(_))
+    }
+
+    /// Returns true if a header block received on the stream, its initial
+    /// headers or its trailers, exceeded the local
+    /// SETTINGS_MAX_HEADER_LIST_SIZE ([`client::Builder::max_header_list_size`],
+    /// [`server::Builder::max_header_list_size`]).
+    ///
+    /// The block was not delivered. The library reset the stream with
+    /// `PROTOCOL_ERROR`, so the error is also a library reset with that
+    /// reason.
+    ///
+    /// [`client::Builder::max_header_list_size`]: crate::client::Builder::max_header_list_size
+    /// [`server::Builder::max_header_list_size`]: crate::server::Builder::max_header_list_size
+    pub fn is_header_list_too_large(&self) -> bool {
+        matches!(self.kind, Kind::HeaderListTooLarge(_))
     }
 
     /// Returns true if the error was received in a frame from the remote.
@@ -111,7 +132,9 @@ impl Error {
     pub fn is_library(&self) -> bool {
         matches!(
             self.kind,
-            Kind::GoAway(_, _, Initiator::Library) | Kind::Reset(_, _, Initiator::Library)
+            Kind::GoAway(_, _, Initiator::Library)
+                | Kind::Reset(_, _, Initiator::Library)
+                | Kind::HeaderListTooLarge(_)
         )
     }
 }
@@ -126,6 +149,7 @@ impl From<proto::Error> for Error {
                 GoAway(debug_data, reason, initiator) => {
                     Kind::GoAway(debug_data, reason, initiator)
                 }
+                HeaderListTooLarge(stream_id) => Kind::HeaderListTooLarge(stream_id),
                 Io(kind, inner) => {
                     Kind::Io(inner.map_or_else(|| kind.into(), |inner| io::Error::new(kind, inner)))
                 }
@@ -167,6 +191,9 @@ impl fmt::Display for Error {
             }
             Kind::Reset(_, reason, Initiator::Library) => {
                 return write!(fmt, "stream error detected: {}", reason)
+            }
+            Kind::HeaderListTooLarge(_) => {
+                return write!(fmt, "stream error detected: {}", Reason::PROTOCOL_ERROR)
             }
             Kind::Reset(_, reason, Initiator::Remote) => {
                 return write!(fmt, "stream error received: {}", reason)

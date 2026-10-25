@@ -10,6 +10,9 @@ use std::io;
 pub enum Error {
     Reset(StreamId, Reason, Initiator),
     GoAway(Bytes, Reason, Initiator),
+    /// The stream was reset with a library PROTOCOL_ERROR because a header
+    /// block received on it exceeded SETTINGS_MAX_HEADER_LIST_SIZE.
+    HeaderListTooLarge(StreamId),
     Io(io::ErrorKind, Option<String>),
 }
 
@@ -29,7 +32,7 @@ impl Error {
     pub(crate) fn is_local(&self) -> bool {
         match *self {
             Self::Reset(_, _, initiator) | Self::GoAway(_, _, initiator) => initiator.is_local(),
-            Self::Io(..) => true,
+            Self::HeaderListTooLarge(_) | Self::Io(..) => true,
         }
     }
 
@@ -39,6 +42,10 @@ impl Error {
 
     pub(crate) fn library_reset(stream_id: StreamId, reason: Reason) -> Self {
         Self::Reset(stream_id, reason, Initiator::Library)
+    }
+
+    pub(crate) fn header_list_too_large(stream_id: StreamId) -> Self {
+        Self::HeaderListTooLarge(stream_id)
     }
 
     pub(crate) fn library_go_away(reason: Reason) -> Self {
@@ -75,6 +82,7 @@ impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Self::Reset(_, reason, _) | Self::GoAway(_, reason, _) => reason.fmt(fmt),
+            Self::HeaderListTooLarge(_) => Reason::PROTOCOL_ERROR.fmt(fmt),
             Self::Io(_, Some(ref inner)) => inner.fmt(fmt),
             Self::Io(kind, None) => io::Error::from(kind).fmt(fmt),
         }

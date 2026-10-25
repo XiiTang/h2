@@ -94,8 +94,12 @@ struct HeaderBlock {
     /// Precomputed size of all of our header fields, for perf reasons
     field_size: usize,
 
-    /// Set to true if decoding went over the max header list size.
+    /// Set to true if decoding went over the max header list size, or the
+    /// field map's capacity.
     is_over_size: bool,
+
+    /// Set to true if decoding went over the max header list size.
+    is_over_header_list_size: bool,
 
     /// Pseudo headers, these are broken out as they must be sent as part of the
     /// headers frame.
@@ -125,6 +129,7 @@ impl Headers {
                 field_size: calculate_headermap_size(&fields),
                 fields,
                 is_over_size: false,
+                is_over_header_list_size: false,
                 pseudo,
             },
             flags: HeadersFlag::default(),
@@ -142,6 +147,7 @@ impl Headers {
                 field_size: calculate_headermap_size(&fields),
                 fields,
                 is_over_size: false,
+                is_over_header_list_size: false,
                 pseudo: Pseudo::default(),
             },
             flags,
@@ -207,6 +213,7 @@ impl Headers {
                 fields: HeaderMap::new(),
                 field_size: 0,
                 is_over_size: false,
+                is_over_header_list_size: false,
                 pseudo: Pseudo::default(),
             },
             flags,
@@ -246,6 +253,12 @@ impl Headers {
 
     pub fn is_over_size(&self) -> bool {
         self.header_block.is_over_size
+    }
+
+    /// Whether decoding went over SETTINGS_MAX_HEADER_LIST_SIZE (a block can
+    /// also be over size because the field map is full).
+    pub(crate) fn is_over_header_list_size(&self) -> bool {
+        self.header_block.is_over_header_list_size
     }
 
     pub fn into_parts(self) -> (Pseudo, HeaderMap) {
@@ -367,6 +380,7 @@ impl PushPromise {
                 field_size: calculate_headermap_size(&fields),
                 fields,
                 is_over_size: false,
+                is_over_header_list_size: false,
                 pseudo,
             },
             promised_id,
@@ -458,6 +472,7 @@ impl PushPromise {
                 fields: HeaderMap::new(),
                 field_size: 0,
                 is_over_size: false,
+                is_over_header_list_size: false,
                 pseudo: Pseudo::default(),
             },
             promised_id,
@@ -879,8 +894,12 @@ impl HeaderBlock {
                     header_list_way_too_large = true;
                     ControlFlow::Break(())
                 } else {
-                    if headers_size >= max_header_list_size && !self.is_over_size {
+                    // RFC 9113 §6.5.2: the setting is the largest field
+                    // section the endpoint accepts, so a block of exactly
+                    // that size is within it.
+                    if headers_size > max_header_list_size && !self.is_over_header_list_size {
                         tracing::trace!("load_hpack; header list size over max");
+                        self.is_over_header_list_size = true;
                         self.is_over_size = true;
                     }
                     ControlFlow::Continue(())

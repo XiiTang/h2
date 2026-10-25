@@ -236,7 +236,7 @@ impl Recv {
                 res.set_end_stream();
                 Err(RecvHeaderBlockError::Oversize(Some(res)))
             } else {
-                Err(RecvHeaderBlockError::Oversize(None))
+                Err(RecvHeaderBlockError::State(over_size(&frame, stream.id)))
             };
         }
 
@@ -438,7 +438,7 @@ impl Recv {
                 "stream error PROTOCOL_ERROR -- recv_trailers: frame is over size; stream={:?}",
                 stream.id
             );
-            return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
+            return Err(over_size(&frame, stream.id));
         }
 
         let trailers = frame.into_fields();
@@ -1368,6 +1368,17 @@ mod tests {
 impl Open {
     pub fn is_push_promise(&self) -> bool {
         matches!(*self, Self::PushPromise)
+    }
+}
+
+/// The stream error for a received header block that is over size: the one
+/// place a block over SETTINGS_MAX_HEADER_LIST_SIZE is named as such. A block
+/// over size only because its field map is full stays a plain library reset.
+fn over_size(frame: &frame::Headers, stream_id: StreamId) -> Error {
+    if frame.is_over_header_list_size() {
+        Error::header_list_too_large(stream_id)
+    } else {
+        Error::library_reset(stream_id, Reason::PROTOCOL_ERROR)
     }
 }
 

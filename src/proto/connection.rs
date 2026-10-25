@@ -463,6 +463,11 @@ where
                 self.handle_go_away(reason, debug_data, initiator);
                 Ok(())
             }
+            // The streams turn an oversized header block into its stream's
+            // reset; one reaching here is the same library reset.
+            Err(Error::HeaderListTooLarge(id)) => {
+                self.handle_poll2_result(Err(Error::library_reset(id, Reason::PROTOCOL_ERROR)))
+            }
             // Attempting to read a frame resulted in a stream level error.
             // Locally detected stream errors are reported to the peer with
             // RST_STREAM. Remotely initiated resets have already been applied
