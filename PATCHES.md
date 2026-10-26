@@ -122,7 +122,8 @@ The workspace run includes:
 - eof_does_not_fill_goaway_capture
 - first_accepted_frame_cannot_be_replaced
 
-The existing ignored tests remain ignored: request_with_h1_version;
+The existing 14 ignored tests remain ignored:
+hpack::encoder::test::test_evicted_overflow; request_with_h1_version;
 read_frame_too_big; read_headers_empty_payload; read_headers_with_pseudo;
 read_headers_without_pseudo; expand_window_calls_are_coalesced;
 expand_window_sends_window_update; recv_window_update_causes_overflow;
