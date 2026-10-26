@@ -131,3 +131,15 @@ stream_close_by_recv_reset_frame_releases_capacity;
 recv_push_promise_with_wrong_authority_is_stream_error;
 accept_with_pending_connections_after_socket_close; recv_trailers_without_eos;
 and the frame::unpack_octets_4 doctest.
+
+Baseline compiler evidence (macOS arm64, pinned Rust toolchain, work tip
+db341210890d8e95381c13b49b8356c43da552a4):
+`build-slot cargo clippy --lib --tests --locked -- -D warnings` exited 101.
+Eight diagnostics concern unchanged baseline code in src/hpack/table.rs
+(309, 324, 356), src/proto/streams/prioritize.rs (717),
+src/proto/streams/recv.rs (167), src/proto/streams/store.rs (90),
+src/proto/streams/stream.rs (345), and src/frame/headers.rs (970).
+Comparison with base e9334a79 confirms the diagnosed production expressions
+were not introduced by W5d. The landing owner excludes these baseline results
+from this change's gates; no unrelated repair or lint waiver is included.
+The workspace regression and formatting results above remain unchanged.
