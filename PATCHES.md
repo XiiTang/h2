@@ -134,7 +134,7 @@ and the frame::unpack_octets_4 doctest.
 
 Baseline compiler evidence (macOS arm64, pinned Rust toolchain, work tip
 db341210890d8e95381c13b49b8356c43da552a4):
-`build-slot cargo clippy --lib --tests --locked -- -D warnings` exited 101.
+`build-slot cargo clippy -p h2 -p h2-tests --lib --tests --locked -- -D warnings` exited 101.
 Eight diagnostics concern unchanged baseline code in src/hpack/table.rs
 (309, 324, 356), src/proto/streams/prioritize.rs (717),
 src/proto/streams/recv.rs (167), src/proto/streams/store.rs (90),
