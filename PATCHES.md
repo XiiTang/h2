@@ -82,48 +82,51 @@ trailers never meet (the predicate is false). With `>=` restored the
 200-byte headers are refused; with `over_size` returning a plain reset every
 predicate assertion fails; before the patch the predicate does not exist.
 
-## Received GOAWAY facts in errors (W5d)
+## Received GOAWAY facts (Boundless W5d / #287)
 
-Boundless reports a peer's GOAWAY as `Http.GoAway {last_stream_id, error_code,
-debug_data}` (driver plan v23 W5d; RFC 9113 §6.8). Upstream keeps a received
-GOAWAY's debug data and reason in `proto::Error::GoAway` (src/proto/error.rs:12,
-:56) and the public `Kind::GoAway` (src/error.rs:25-43), but drops its last
-stream identifier when it builds the error, for the streams it fails above that
-identifier (src/proto/streams/streams.rs:800-816) and for the connection's own
-result (src/proto/connection.rs:238-256); the public `Error` exposes only
-`reason()`, so the debug data is reachable only through `Display` text.
+Based on e9334a7, carry 00c0b0b533919d17fa8b4e1fefc67f1d86d342e9,
+3b507022851e3d78ace13d0d43944d22340f78e2 and
+05b454ced5b195dfc4ce772ec1e30e308c1b531c, adapted without the separate
+W17c send-cap line (new commits d4effef, 68c2e62, 8436db7).
+A received GOAWAY lost its last-stream-id at the error boundary, and
+ensure_reason reduced it to a bare reason for poll_reset. Keep last_stream_id,
+reason and debug bytes in the internal/public error and return that stored
+GOAWAY whole to response/connection/new-request/readiness/poll_reset callers.
+Do not infer processing, retry, or decode debug bytes as text; graceful
+connection completion stays Ok. Preserve HeaderListTooLarge and Reset reason
+handling and current header/trailer/exact-limit repairs. No aggregate
+send-queue cap is included.
 
-The patch keeps the received frame's last stream identifier in both error
-representations and adds `Error::last_stream_id() -> Option<StreamId>` (only for
-a GOAWAY received from the peer) and `Error::debug_data() -> Option<&Bytes>`
-(for any GOAWAY). Nothing is inferred from the facts; GOAWAY handling, stream
-selection and `Display` are unchanged.
+The accepted receive entry additionally fills a write-once GoAwayCapture before
+stream-error fanout. Public ReceivedGoAway read-only accessors expose the exact
+last_stream_id, reason and debug_data; Builder::received_go_away installs the
+shared capture once before handshake. The snapshot survives a successful drain
+without changing connection results or retry behavior. No external mutator is
+exposed; only the native accepted-frame entry writes the capture.
 
-`poll_reset` (`SendStream`, `SendResponse`, `SendPushedResponse`) also hands a
-stream's end to the caller, and upstream `State::ensure_reason` reduced a GOAWAY
-there to its bare reason (src/proto/streams/state.rs:477-483 at 222cc7b); hyper's
-request-body writer rebuilds its error from that reason. It now returns the
-GOAWAY whole through the existing error branch, as it already did for I/O and
-other errors; reset reasons are returned as before. The other paths that hand a
-stream's end to a caller already return the stored error whole: the response
-future, `poll_informational`, `RecvStream::poll_data` and `poll_trailers`, push
-promises, `send_request`/`poll_ready` (the connection error) and the connection
-future. `poll_capacity` returns `None` and later sends return
-`InactiveStreamId`/`UnexpectedFrameType` for any ended stream: they carry no end
-to reduce (only a send queue cap end is returned there, below).
+Regression evidence on macOS arm64, code tip
+1adb46958b777c5abc7d4a7bea84258ffc84aa4c:
+`cargo test --workspace` exited 0; `cargo fmt --all --check` exited 0.
+The workspace run includes:
 
-Regression: `received_go_away_facts_reach_stream_and_connection_errors`
-(tests/h2-tests/tests/client_request.rs) receives GOAWAY(1, ENHANCE_YOUR_CALM,
-"too_many_pings") with streams 1 and 3 open; stream 3's error and the
-connection's error both carry the last stream id, reason and debug data. Before
-the patch the test does not compile (neither accessor exists) and no public API
-yields the last stream id.
-`received_go_away_facts_reach_new_requests_and_poll_ready` and
-`received_graceful_go_away_facts_reach_new_requests` (review probes) check the
-same facts on a request sent after the GOAWAY and on `poll_ready`, for an
-ENHANCE_YOUR_CALM and a NO_ERROR GOAWAY; the graceful connection still ends
-with `Ok`, as upstream. `received_go_away_facts_reach_poll_reset` checks the
-stream's `poll_reset` after its response failed with the GOAWAY, with binary
-debug data, and the unit test `ensure_reason_returns_a_received_go_away_whole`
-(src/proto/streams/state.rs) checks the check point; both fail at 8eda728
-(`poll_reset` returns `Ok(ENHANCE_YOUR_CALM)`).
+- received_go_away_facts_reach_stream_and_connection_errors
+- received_go_away_facts_reach_new_requests_and_poll_ready
+- received_graceful_go_away_facts_reach_new_requests
+- ensure_reason_returns_a_received_go_away_whole
+- received_go_away_facts_reach_poll_reset
+- recv_too_big_trailers_fails_the_stream
+- server_recv_too_big_trailers_fails_the_stream
+- header_list_size_admits_a_block_at_the_limit_and_names_one_over_it
+- ensure_reason_keeps_header_limit_and_reset_reasons
+- graceful_goaway_capture_survives_successful_drain
+- eof_does_not_fill_goaway_capture
+- first_accepted_frame_cannot_be_replaced
+
+The existing ignored tests remain ignored: request_with_h1_version;
+read_frame_too_big; read_headers_empty_payload; read_headers_with_pseudo;
+read_headers_without_pseudo; expand_window_calls_are_coalesced;
+expand_window_sends_window_update; recv_window_update_causes_overflow;
+stream_close_by_recv_reset_frame_releases_capacity;
+recv_push_promise_with_wrong_authority_is_stream_error;
+accept_with_pending_connections_after_socket_close; recv_trailers_without_eos;
+and the frame::unpack_octets_4 doctest.
