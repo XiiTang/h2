@@ -307,6 +307,7 @@ pub struct PushPromises {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Builder {
+    received_go_away: Option<crate::GoAwayCapture>,
     /// Time to keep locally reset streams around before reaping.
     reset_stream_duration: Duration,
 
@@ -631,6 +632,18 @@ where
 // ===== impl Builder =====
 
 impl Builder {
+    /// Retain the first accepted peer GOAWAY independently of connection errors.
+    ///
+    /// Panics if a capture has already been configured on this builder.
+    pub fn received_go_away(&mut self, capture: crate::GoAwayCapture) -> &mut Self {
+        assert!(
+            self.received_go_away.is_none(),
+            "configure GOAWAY capture once"
+        );
+        self.received_go_away = Some(capture);
+        self
+    }
+
     /// Returns a new client builder instance initialized with default
     /// configuration values.
     ///
@@ -659,6 +672,7 @@ impl Builder {
     /// ```
     pub fn new() -> Builder {
         Builder {
+            received_go_away: None,
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
@@ -1356,6 +1370,7 @@ where
         let inner = proto::Connection::new(
             codec,
             proto::Config {
+                received_go_away: builder.received_go_away.clone(),
                 next_stream_id: builder.stream_id,
                 initial_max_send_streams: builder.initial_max_send_streams,
                 max_send_buffer_size: builder.max_send_buffer_size,

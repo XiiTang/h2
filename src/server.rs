@@ -1522,6 +1522,7 @@ where
                     let connection = proto::Connection::new(
                         codec,
                         Config {
+                            received_go_away: None,
                             next_stream_id: 2.into(),
                             // Server does not need to locally initiate any streams
                             initial_max_send_streams: 0,

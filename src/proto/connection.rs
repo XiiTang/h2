@@ -75,6 +75,7 @@ struct DynConnection<'a, B: Buf = Bytes> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
+    pub received_go_away: Option<crate::GoAwayCapture>,
     pub next_stream_id: StreamId,
     pub initial_max_send_streams: usize,
     pub max_send_buffer_size: usize,
@@ -127,6 +128,7 @@ where
     pub fn new(codec: Codec<T, Prioritized<B>>, config: Config) -> Connection<T, P, B> {
         fn streams_config(config: &Config) -> streams::Config {
             streams::Config {
+                received_go_away: config.received_go_away.clone(),
                 initial_max_send_streams: config.initial_max_send_streams,
                 local_max_buffer_size: config.max_send_buffer_size,
                 local_next_stream_id: config.next_stream_id,

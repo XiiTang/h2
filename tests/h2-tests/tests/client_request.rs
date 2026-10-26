@@ -3,7 +3,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use h2_support::prelude::*;
 use std::pin::Pin;
-use std::task::Context;
+use std::task::{Context, Poll};
 use std::{io, panic};
 
 #[tokio::test]
@@ -2459,4 +2459,70 @@ async fn received_go_away_facts_reach_poll_reset() {
         Err(ref err) => assert_facts(err),
         Ok(reason) => panic!("poll_reset erased the GOAWAY's facts: Ok({:?})", reason),
     }
+}
+
+#[tokio::test]
+async fn graceful_goaway_capture_survives_successful_drain() {
+    h2_support::trace_init!();
+    let (io, mut peer) = mock::new();
+    let capture = h2::GoAwayCapture::default();
+    let (mut client, mut conn) = client::Builder::new()
+        .received_go_away(capture.clone())
+        .handshake::<_, Bytes>(io)
+        .await
+        .unwrap();
+    conn.drive(peer.assert_client_handshake()).await;
+    let request = Request::builder()
+        .uri("https://example.com/")
+        .body(())
+        .unwrap();
+    let (response, _) = client.send_request(request, true).unwrap();
+    conn.drive(
+        peer.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        ),
+    )
+    .await;
+    peer.send_frame(frames::headers(1).response(200).eos())
+        .await;
+    assert_eq!(conn.drive(response).await.unwrap().status(), 200);
+    assert!(capture.received().is_none());
+    peer.send_frame(frames::go_away(1).data(Bytes::from_static(b"\x00\xffdrain")))
+        .await;
+    conn.drive(poll_fn(|cx| {
+        if capture.received().is_some() {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }))
+    .await;
+    drop(peer);
+    drop(client);
+    conn.await.unwrap();
+    let received = capture
+        .received()
+        .expect("accepted GOAWAY survives Ok drive");
+    assert_eq!(received.last_stream_id().as_u32(), 1);
+    assert_eq!(received.reason(), Reason::NO_ERROR);
+    assert_eq!(received.debug_data(), b"\x00\xffdrain");
+}
+
+#[tokio::test]
+async fn eof_does_not_fill_goaway_capture() {
+    let (io, mut peer) = mock::new();
+    let capture = h2::GoAwayCapture::default();
+    let (client, mut conn) = client::Builder::new()
+        .received_go_away(capture.clone())
+        .handshake::<_, Bytes>(io)
+        .await
+        .unwrap();
+    conn.drive(peer.assert_client_handshake()).await;
+    drop(peer);
+    drop(client);
+    conn.await.unwrap();
+    assert!(capture.received().is_none());
 }

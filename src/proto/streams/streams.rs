@@ -67,6 +67,7 @@ pub(crate) struct OpaqueStreamRef {
 /// TODO: better name
 #[derive(Debug)]
 struct Inner {
+    received_go_away: Option<crate::GoAwayCapture>,
     /// Tracks send & recv stream concurrency.
     counts: Counts,
 
@@ -450,6 +451,7 @@ impl<B> DynStreams<'_, B> {
 impl Inner {
     fn new(peer: peer::Dyn, config: Config) -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Inner {
+            received_go_away: config.received_go_away.clone(),
             counts: Counts::new(peer, &config),
             actions: Actions {
                 recv: Recv::new(peer, &config),
@@ -800,6 +802,9 @@ impl Inner {
         let last_stream_id = frame.last_stream_id();
 
         actions.send.recv_go_away(last_stream_id)?;
+        if let Some(capture) = &self.received_go_away {
+            capture.retain(frame);
+        }
 
         let err = Error::remote_go_away(frame);
 

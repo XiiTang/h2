@@ -552,4 +552,40 @@ mod tests {
             Some(&b"\x00\xffdebug"[..])
         );
     }
+    #[test]
+    fn ensure_reason_keeps_header_limit_and_reset_reasons() {
+        for (cause, expected) in [
+            (
+                Cause::Error(Error::HeaderListTooLarge(StreamId::from(1))),
+                Reason::PROTOCOL_ERROR,
+            ),
+            (
+                Cause::ErrorAfterEndStream(Error::HeaderListTooLarge(StreamId::from(1))),
+                Reason::PROTOCOL_ERROR,
+            ),
+            (
+                Cause::Error(Error::library_reset(StreamId::from(1), Reason::CANCEL)),
+                Reason::CANCEL,
+            ),
+            (
+                Cause::ErrorAfterEndStream(Error::library_reset(
+                    StreamId::from(1),
+                    Reason::REFUSED_STREAM,
+                )),
+                Reason::REFUSED_STREAM,
+            ),
+            (
+                Cause::ScheduledLibraryReset(Reason::ENHANCE_YOUR_CALM),
+                Reason::ENHANCE_YOUR_CALM,
+            ),
+        ] {
+            let state = State {
+                inner: Closed(cause),
+            };
+            assert_eq!(
+                state.ensure_reason(PollReset::Streaming).unwrap(),
+                Some(expected)
+            );
+        }
+    }
 }

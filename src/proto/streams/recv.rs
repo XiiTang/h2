@@ -1319,6 +1319,7 @@ mod tests {
         const FRAME_COUNT: usize = (u32::MAX as usize / FRAME_LEN) + 1;
 
         let config = Config {
+            received_go_away: None,
             initial_max_send_streams: 0,
             local_max_buffer_size: 0,
             local_next_stream_id: 2.into(),

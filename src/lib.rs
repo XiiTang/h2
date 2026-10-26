@@ -110,6 +110,8 @@ macro_rules! ready {
 #[cfg_attr(feature = "unstable", allow(missing_docs))]
 mod codec;
 mod error;
+mod go_away_capture;
+pub use go_away_capture::{GoAwayCapture, ReceivedGoAway};
 mod hpack;
 
 #[cfg(not(feature = "unstable"))]

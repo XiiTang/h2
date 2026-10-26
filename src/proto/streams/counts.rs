@@ -359,6 +359,7 @@ mod tests {
         Counts::new(
             peer::Dyn::Server,
             &Config {
+                received_go_away: None,
                 initial_max_send_streams: 0,
                 local_max_buffer_size: 0,
                 local_next_stream_id: 2.into(),

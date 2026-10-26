@@ -39,6 +39,7 @@ pub(super) enum BufferStatus {
 
 #[derive(Debug)]
 pub struct Config {
+    pub received_go_away: Option<crate::GoAwayCapture>,
     /// Initial maximum number of locally initiated streams.
     /// After receiving a Settings frame from the remote peer,
     /// the connection will overwrite this value with the
