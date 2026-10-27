@@ -15,6 +15,9 @@ pub use crate::frame::Reason;
 /// If the error was caused by the remote peer, then it will contain a
 /// [`Reason`] which can be obtained with the [`reason`] function.
 ///
+/// Cloning preserves protocol facts. For I/O errors it preserves the kind and
+/// displayed message, without retaining the inner source chain.
+///
 /// [`Reason`]: struct.Reason.html
 /// [`reason`]: #method.reason
 #[derive(Debug)]
@@ -46,6 +49,41 @@ enum Kind {
 
     /// An `io::Error` occurred while trying to read or write.
     Io(io::Error),
+}
+
+impl Clone for Error {
+    fn clone(&self) -> Self {
+        Self {
+            kind: match &self.kind {
+                Kind::Reset(id, reason, initiator) => Kind::Reset(*id, *reason, *initiator),
+                Kind::GoAway(data, reason, initiator, last) => {
+                    Kind::GoAway(data.clone(), *reason, *initiator, *last)
+                }
+                Kind::HeaderListTooLarge(id) => Kind::HeaderListTooLarge(*id),
+                Kind::Reason(reason) => Kind::Reason(*reason),
+                Kind::User(error) => Kind::User(match error {
+                    UserError::InactiveStreamId => UserError::InactiveStreamId,
+                    UserError::UnexpectedFrameType => UserError::UnexpectedFrameType,
+                    UserError::PayloadTooBig => UserError::PayloadTooBig,
+                    UserError::Rejected => UserError::Rejected,
+                    UserError::ReleaseCapacityTooBig => UserError::ReleaseCapacityTooBig,
+                    UserError::OverflowedStreamId => UserError::OverflowedStreamId,
+                    UserError::MalformedHeaders => UserError::MalformedHeaders,
+                    UserError::MissingUriSchemeAndAuthority => {
+                        UserError::MissingUriSchemeAndAuthority
+                    }
+                    UserError::PollResetAfterSendResponse => UserError::PollResetAfterSendResponse,
+                    UserError::SendPingWhilePending => UserError::SendPingWhilePending,
+                    UserError::SendSettingsWhilePending => UserError::SendSettingsWhilePending,
+                    UserError::PeerDisabledServerPush => UserError::PeerDisabledServerPush,
+                    UserError::InvalidInformationalStatusCode => {
+                        UserError::InvalidInformationalStatusCode
+                    }
+                }),
+                Kind::Io(error) => Kind::Io(io::Error::new(error.kind(), error.to_string())),
+            },
+        }
+    }
 }
 
 // ===== impl Error =====
@@ -251,12 +289,84 @@ impl error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
-    use super::Error;
+    use super::*;
     use crate::Reason;
 
     #[test]
     fn error_from_reason() {
         let err = Error::from(Reason::HTTP_1_1_REQUIRED);
         assert_eq!(err.reason(), Some(Reason::HTTP_1_1_REQUIRED));
+    }
+    #[test]
+    fn clone_retains_protocol_facts_and_io_kind_and_message() {
+        let mut errors = vec![
+            Error {
+                kind: Kind::Reason(Reason::CANCEL),
+            },
+            Error {
+                kind: Kind::HeaderListTooLarge(StreamId::from(7)),
+            },
+            Error::from_io(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "fixture reset",
+            )),
+        ];
+        for initiator in [Initiator::User, Initiator::Library, Initiator::Remote] {
+            errors.push(Error {
+                kind: Kind::GoAway(
+                    Bytes::from_static(b"\x00\xffgoaway"),
+                    Reason::ENHANCE_YOUR_CALM,
+                    initiator,
+                    Some(StreamId::from(3)),
+                ),
+            });
+            errors.push(Error {
+                kind: Kind::Reset(StreamId::from(5), Reason::REFUSED_STREAM, initiator),
+            });
+        }
+        for error in [
+            UserError::InactiveStreamId,
+            UserError::UnexpectedFrameType,
+            UserError::PayloadTooBig,
+            UserError::Rejected,
+            UserError::ReleaseCapacityTooBig,
+            UserError::OverflowedStreamId,
+            UserError::MalformedHeaders,
+            UserError::MissingUriSchemeAndAuthority,
+            UserError::PollResetAfterSendResponse,
+            UserError::SendPingWhilePending,
+            UserError::SendSettingsWhilePending,
+            UserError::PeerDisabledServerPush,
+            UserError::InvalidInformationalStatusCode,
+        ] {
+            errors.push(Error::from(error));
+        }
+        for original in errors {
+            let cloned = original.clone();
+            assert_eq!(cloned.reason(), original.reason());
+            assert_eq!(cloned.debug_data(), original.debug_data());
+            assert_eq!(cloned.last_stream_id(), original.last_stream_id());
+            assert_eq!(cloned.is_remote(), original.is_remote());
+            assert_eq!(cloned.is_library(), original.is_library());
+            assert_eq!(cloned.is_reset(), original.is_reset());
+            assert_eq!(
+                cloned.is_header_list_too_large(),
+                original.is_header_list_too_large()
+            );
+            assert_eq!(cloned.to_string(), original.to_string());
+            match (&original.kind, &cloned.kind) {
+                (Kind::GoAway(a, ar, ai, al), Kind::GoAway(b, br, bi, bl)) => {
+                    assert_eq!((a, ar, ai, al), (b, br, bi, bl));
+                }
+                (Kind::Reset(a, ar, ai), Kind::Reset(b, br, bi)) => {
+                    assert_eq!((a, ar, ai), (b, br, bi));
+                }
+                (Kind::HeaderListTooLarge(a), Kind::HeaderListTooLarge(b)) => assert_eq!(a, b),
+                (Kind::Reason(a), Kind::Reason(b)) => assert_eq!(a, b),
+                (Kind::User(a), Kind::User(b)) => assert_eq!(format!("{a:?}"), format!("{b:?}")),
+                (Kind::Io(a), Kind::Io(b)) => assert_eq!(a.kind(), b.kind()),
+                _ => panic!("cloning changed the error kind"),
+            }
+        }
     }
 }

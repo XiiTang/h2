@@ -143,3 +143,46 @@ Comparison with base e9334a79 confirms the diagnosed production expressions
 were not introduced by W5d. The landing owner excludes these baseline results
 from this change's gates; no unrelated repair or lint waiver is included.
 The workspace regression and formatting results above remain unchanged.
+
+
+## Clone complete errors for hyper readiness retention (W5d T9)
+
+The hyper CloseReason latch must retain the actual h2 readiness error before
+its dispatcher closes and return that same fact set through public readiness.
+On ba6b4e6e89849c480c7b1c5312aff539d0f1b658, h2::Error was not Clone. The
+landing owner's approved recipe adds Clone only in src/error.rs: each private
+Kind variant is copied field by field, including every UserError variant.
+Io preserves io::ErrorKind and the displayed message through
+io::Error::new(e.kind(), e.to_string()); only its inner source chain is lost.
+Protocol reason, received debug bytes, stream ids and initiator are retained.
+The private exhaustive Kind match is the one clone checkpoint; public callers
+cannot construct or replace a different private representation.
+
+Regression evidence on macOS arm64, Rust1.98.1, code based on full ba6b4e6e
+above with this patch (committed together with this evidence), all Cargo calls
+through build-slot with CARGO_INCREMENTAL=0:
+
+- `build-slot cargo test -p h2 --lib --locked error::tests::`: exit0, two passed,
+  including clone_retains_protocol_facts_and_io_kind_and_message. It covers
+  GoAway/Reset for all three initiators, Reason, all thirteen User variants,
+  HeaderListTooLarge and Io kind/message.
+- `build-slot cargo test -p h2-tests --test client_request --locked -- received_go_away received_graceful_go_away graceful_goaway_capture eof_does_not_fill_goaway_capture header_list_size_admits_a_block_at_the_limit_and_names_one_over_it`:
+  exit0, six GOAWAY/capture tests passed. The header-limit name belongs to the
+  trailers target and did not match here; its actual run follows.
+- `build-slot cargo test -p h2 --lib --locked ensure_reason_`: exit0, two passed.
+- `build-slot cargo test -p h2-tests --test trailers --locked -- recv_too_big_trailers_fails_the_stream header_list_size_admits_a_block_at_the_limit_and_names_one_over_it`:
+  exit0, three passed, including server trailers and exact-limit coverage.
+- `build-slot cargo build -p h2 --locked`: exit0.
+- `build-slot cargo fmt --all` and `build-slot cargo fmt --all --check`: exit0.
+- `build-slot cargo clippy -p h2 -p h2-tests --lib --tests --locked -- -D warnings`:
+  exit101, the same eight baseline diagnostics in src/hpack/table.rs,
+  src/proto/streams/prioritize.rs, src/proto/streams/recv.rs,
+  src/proto/streams/store.rs, src/proto/streams/stream.rs and src/frame/headers.rs
+  inventoried above. No new clone-code diagnostic, unrelated repair or waiver.
+  These unchanged-code findings remain owner-excluded baseline results.
+
+Hyper and Boundless must select the resulting full h2 commit SHA; hyper uses
+that same SHA for both patch.crates-io.h2.rev and --precise. Their actual SHA,
+metadata/lock checks and regression results are recorded in hyper PATCHES.md
+and the implementation report. No h2 evidence-only commit may follow those
+hyper checks without repeating them against the resulting new tip.
