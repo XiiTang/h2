@@ -186,3 +186,16 @@ that same SHA for both patch.crates-io.h2.rev and --precise. Their actual SHA,
 metadata/lock checks and regression results are recorded in hyper PATCHES.md
 and the implementation report. No h2 evidence-only commit may follow those
 hyper checks without repeating them against the resulting new tip.
+
+
+## W5-D8: returned error and received reply fidelity
+
+Upstream 3c5f61c9 reduces I/O sources to kind/text in the protocol error.
+The pinned W5d public Clone also reconstructs from kind/text. This loses
+typed transport attribution through stream fan-out and Hyper readiness.
+Share the original owned I/O error through those existing conversions.
+Public signatures, wire/reset/GOAWAY behavior, fan-out and disposal stay the same.
+Shared extraction preserves custom sources and reconstructs bare OS errors by
+their actual number. The former Clone source-loss limitation is superseded.
+
+Regression results are pending the targeted implementation checks.

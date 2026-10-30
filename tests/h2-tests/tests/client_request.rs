@@ -2526,3 +2526,101 @@ async fn eof_does_not_fill_goaway_capture() {
     conn.await.unwrap();
     assert!(capture.received().is_none());
 }
+
+#[tokio::test]
+async fn stream_fanout_retains_the_original_typed_io_source() {
+    use std::{error::Error as _, fmt, sync::Arc};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    #[derive(Debug)]
+    struct Marker(Arc<()>);
+    impl fmt::Display for Marker {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("transport marker")
+        }
+    }
+    impl std::error::Error for Marker {}
+    struct Transport {
+        inner: tokio::io::DuplexStream,
+        fail: tokio::sync::oneshot::Receiver<io::Error>,
+    }
+    impl AsyncRead for Transport {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Poll::Ready(Ok(error)) = std::future::Future::poll(Pin::new(&mut self.fail), cx)
+            {
+                return Poll::Ready(Err(error));
+            }
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+    impl AsyncWrite for Transport {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, bytes)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+    let (client_io, peer_io) = tokio::io::duplex(4096);
+    let (fail, failure) = tokio::sync::oneshot::channel();
+    let marker = Arc::new(());
+    let sent = marker.clone();
+    let peer = tokio::spawn(async move {
+        let mut server = h2::server::handshake(peer_io).await.unwrap();
+        let _request = server.accept().await.unwrap().unwrap();
+        fail.send(io::Error::new(io::ErrorKind::ConnectionReset, Marker(sent)))
+            .unwrap();
+    });
+    let (mut client, connection) = client::handshake(Transport {
+        inner: client_io,
+        fail: failure,
+    })
+    .await
+    .unwrap();
+    let driver = tokio::spawn(connection);
+    let (response, _) = client
+        .send_request(
+            Request::builder()
+                .uri("https://example.test/")
+                .body(())
+                .unwrap(),
+            true,
+        )
+        .unwrap();
+    let error = response.await.unwrap_err();
+    let retained = error.clone().into_io().unwrap();
+    assert_eq!(retained.kind(), io::ErrorKind::ConnectionReset);
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&retained);
+    let mut observed = None;
+    while let Some(error) = source {
+        if let Some(value) = error.downcast_ref::<Marker>() {
+            observed = Some(value.0.clone());
+            break;
+        }
+        source = error.source();
+    }
+    assert!(Arc::ptr_eq(
+        &observed.expect("typed source after native fan-out and shared extraction"),
+        &marker
+    ));
+    assert!(driver
+        .await
+        .unwrap()
+        .unwrap_err()
+        .get_io()
+        .unwrap()
+        .get_ref()
+        .unwrap()
+        .is::<Marker>());
+    peer.await.unwrap();
+}

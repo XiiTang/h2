@@ -3,7 +3,7 @@ use crate::frame::StreamId;
 use crate::proto::{self, Initiator};
 
 use bytes::Bytes;
-use std::{error, fmt, io};
+use std::{error, fmt, io, sync::Arc};
 
 pub use crate::frame::Reason;
 
@@ -15,8 +15,7 @@ pub use crate::frame::Reason;
 /// If the error was caused by the remote peer, then it will contain a
 /// [`Reason`] which can be obtained with the [`reason`] function.
 ///
-/// Cloning preserves protocol facts. For I/O errors it preserves the kind and
-/// displayed message, without retaining the inner source chain.
+/// Cloning preserves protocol facts and the original I/O error and source.
 ///
 /// [`Reason`]: struct.Reason.html
 /// [`reason`]: #method.reason
@@ -48,7 +47,7 @@ enum Kind {
     User(UserError),
 
     /// An `io::Error` occurred while trying to read or write.
-    Io(io::Error),
+    Io(Arc<io::Error>),
 }
 
 impl Clone for Error {
@@ -80,7 +79,7 @@ impl Clone for Error {
                         UserError::InvalidInformationalStatusCode
                     }
                 }),
-                Kind::Io(error) => Kind::Io(io::Error::new(error.kind(), error.to_string())),
+                Kind::Io(error) => Kind::Io(error.clone()),
             },
         }
     }
@@ -119,14 +118,14 @@ impl Error {
     /// Returns the error if the error is an io::Error
     pub fn into_io(self) -> Option<io::Error> {
         match self.kind {
-            Kind::Io(e) => Some(e),
+            Kind::Io(e) => Some(owned_io(e)),
             _ => None,
         }
     }
 
     pub(crate) fn from_io(err: io::Error) -> Self {
         Error {
-            kind: Kind::Io(err),
+            kind: Kind::Io(Arc::new(err)),
         }
     }
 
@@ -212,9 +211,7 @@ impl From<proto::Error> for Error {
                     Kind::GoAway(debug_data, reason, initiator, last_stream_id)
                 }
                 HeaderListTooLarge(stream_id) => Kind::HeaderListTooLarge(stream_id),
-                Io(kind, inner) => {
-                    Kind::Io(inner.map_or_else(|| kind.into(), |inner| io::Error::new(kind, inner)))
-                }
+                Io(error) => Kind::Io(error),
             },
         }
     }
@@ -285,7 +282,36 @@ impl fmt::Display for Error {
     }
 }
 
-impl error::Error for Error {}
+impl error::Error for Error {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        self.get_io().map(|error| error as _)
+    }
+}
+
+// Shared extraction keeps custom typed sources reachable; bare OS errors can
+// be recreated without losing their error number.
+fn owned_io(error: Arc<io::Error>) -> io::Error {
+    match Arc::try_unwrap(error) {
+        Ok(error) => error,
+        Err(error) => match error.raw_os_error() {
+            Some(code) => io::Error::from_raw_os_error(code),
+            None => io::Error::new(error.kind(), SharedIo(error)),
+        },
+    }
+}
+
+#[derive(Debug)]
+struct SharedIo(Arc<io::Error>);
+impl fmt::Display for SharedIo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl error::Error for SharedIo {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        self.0.get_ref().map(|error| &**error as _).or(Some(&*self.0))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -298,7 +324,7 @@ mod tests {
         assert_eq!(err.reason(), Some(Reason::HTTP_1_1_REQUIRED));
     }
     #[test]
-    fn clone_retains_protocol_facts_and_io_kind_and_message() {
+    fn clone_retains_protocol_facts_and_io_source() {
         let mut errors = vec![
             Error {
                 kind: Kind::Reason(Reason::CANCEL),
@@ -368,5 +394,33 @@ mod tests {
                 _ => panic!("cloning changed the error kind"),
             }
         }
+        #[derive(Debug)]
+        struct Typed;
+        impl fmt::Display for Typed {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("typed I/O failure")
+            }
+        }
+        impl error::Error for Typed {}
+        let original: Error =
+            proto::Error::from(io::Error::new(io::ErrorKind::ConnectionReset, Typed)).into();
+        assert!(original
+            .clone()
+            .get_io()
+            .unwrap()
+            .get_ref()
+            .unwrap()
+            .is::<Typed>());
+        let shared = original.clone().into_io().unwrap();
+        assert_eq!(shared.kind(), io::ErrorKind::ConnectionReset);
+        let mut source: Option<&(dyn error::Error + 'static)> = Some(&shared);
+        let mut typed = false;
+        while let Some(error) = source {
+            typed |= error.is::<Typed>();
+            source = error.source();
+        }
+        assert!(typed);
+        let os = Error::from_io(io::Error::from_raw_os_error(54));
+        assert_eq!(os.clone().into_io().unwrap().raw_os_error(), Some(54));
     }
 }

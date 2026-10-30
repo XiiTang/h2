@@ -4,6 +4,7 @@ use crate::frame::{self, Reason, StreamId};
 use bytes::Bytes;
 use std::fmt;
 use std::io;
+use std::sync::Arc;
 
 /// Either an H2 reason  or an I/O error
 #[derive(Clone, Debug)]
@@ -14,7 +15,7 @@ pub enum Error {
     /// The stream was reset with a library PROTOCOL_ERROR because a header
     /// block received on it exceeded SETTINGS_MAX_HEADER_LIST_SIZE.
     HeaderListTooLarge(StreamId),
-    Io(io::ErrorKind, Option<String>),
+    Io(Arc<io::Error>),
 }
 
 pub struct GoAway {
@@ -89,21 +90,20 @@ impl fmt::Display for Error {
         match *self {
             Self::Reset(_, reason, _) | Self::GoAway(_, reason, _, _) => reason.fmt(fmt),
             Self::HeaderListTooLarge(_) => Reason::PROTOCOL_ERROR.fmt(fmt),
-            Self::Io(_, Some(ref inner)) => inner.fmt(fmt),
-            Self::Io(kind, None) => io::Error::from(kind).fmt(fmt),
+            Self::Io(ref error) => error.fmt(fmt),
         }
     }
 }
 
 impl From<io::ErrorKind> for Error {
     fn from(src: io::ErrorKind) -> Self {
-        Error::Io(src, None)
+        io::Error::from(src).into()
     }
 }
 
 impl From<io::Error> for Error {
     fn from(src: io::Error) -> Self {
-        Error::Io(src.kind(), src.get_ref().map(|inner| inner.to_string()))
+        Error::Io(Arc::new(src))
     }
 }
 
