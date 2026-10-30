@@ -2529,7 +2529,7 @@ async fn eof_does_not_fill_goaway_capture() {
 
 #[tokio::test]
 async fn stream_fanout_retains_the_original_typed_io_source() {
-    use std::{error::Error as _, fmt, sync::Arc};
+    use std::{fmt, sync::Arc};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     #[derive(Debug)]
     struct Marker(Arc<()>);
