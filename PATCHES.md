@@ -152,8 +152,9 @@ its dispatcher closes and return that same fact set through public readiness.
 On ba6b4e6e89849c480c7b1c5312aff539d0f1b658, h2::Error was not Clone. The
 landing owner's approved recipe adds Clone only in src/error.rs: each private
 Kind variant is copied field by field, including every UserError variant.
-Io preserves io::ErrorKind and the displayed message through
-io::Error::new(e.kind(), e.to_string()); only its inner source chain is lost.
+The original recipe kept only Io kind/message; W5-D8 below replaces that
+lossy backing with the original shared I/O source, including custom sources
+and OS error numbers. Public Clone still copies every protocol fact.
 Protocol reason, received debug bytes, stream ids and initiator are retained.
 The private exhaustive Kind match is the one clone checkpoint; public callers
 cannot construct or replace a different private representation.
@@ -198,4 +199,10 @@ Public signatures, wire/reset/GOAWAY behavior, fan-out and disposal stay the sam
 Shared extraction preserves custom sources and reconstructs bare OS errors by
 their actual number. The former Clone source-loss limitation is superseded.
 
-Regression results are pending the targeted implementation checks.
+Regression evidence on macOS arm64, Rust 1.98.1, through build-slot:
+
+- `cargo test -p h2 --lib --locked error::tests::`: exit 0, two passed, including `clone_retains_protocol_facts_and_io_source`. It checks the existing protocol facts, original typed custom source, shared extraction and actual OS error number.
+- `cargo test -p h2-tests --locked --test client_request --test trailers -- stream_fanout_retains_the_original_typed_io_source recv_too_big_headers recv_too_big_trailers header_list_size_admits_a_block_at_the_limit`: exit 0, five passed. The real h2 exchange verifies stream/driver source identity after fan-out; native header/trailer limits retain their existing behavior.
+- Strict `cargo clippy -p h2 -p h2-tests --lib --tests --locked -- -D warnings`: exit 101, the same eight baseline diagnostics in hpack/table, streams/prioritize/recv/store/stream and frame/headers recorded above. Those files are unchanged by D8; no unrelated repair or waiver.
+
+Boundless selects this source backing with its unchanged hyper dispatch/readiness pin; its targeted real body/readiness and proxy TLS effects use those Git pins. The native patch introduces no timer, close, retry, cancellation or transport-custody action. Pre-landing lanes remain the landing owner's gate.
