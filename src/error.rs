@@ -309,7 +309,7 @@ impl fmt::Display for SharedIo {
 }
 impl error::Error for SharedIo {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        self.0.get_ref().map(|error| &**error as _).or(Some(&*self.0))
+        self.0.get_ref().map(|error| error as _).or(Some(&*self.0))
     }
 }
 
